@@ -1,0 +1,51 @@
+# ===============================================
+# ROAD OBJECT 3D MAPPING - PIPELINE CONFIGURATION
+# ===============================================
+
+paths:
+  raw_video: "data/0a65321e9bd2e5b098e93f8c34bd304a.mp4"
+  frames_dir: "data/processed/frames"
+  colmap_workspace: "data/processed/colmap"
+  output_dir: "outputs"
+
+frame_extraction:
+  fps: 10
+  resize_width: 1280
+
+camera:
+  estimate: true
+  fx: null
+  fy: null
+  cx: null
+  cy: null
+  distortion: null
+
+detection:
+  model: "yolov8n.pt"
+  confidence: 0.4
+  target_classes:
+    - "car"
+    - "truck"
+    - "bus"
+    - "motorcycle"
+    - "bicycle"
+    - "person"
+    - "traffic light"
+    - "stop sign"
+
+depth:
+  model: "depth-anything/Depth-Anything-V2-Small-hf"
+  device: "cpu"
+
+slam:
+  backend: "colmap"
+  matcher: "sequential"
+
+mapping:
+  cluster_eps_meters: 3.0
+  cluster_min_samples: 2
+
+visualization:
+  point_size: 3
+  show_camera_trajectory: true
+  show_axes: true
