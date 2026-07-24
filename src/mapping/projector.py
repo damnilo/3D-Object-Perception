@@ -125,7 +125,7 @@ def compute_depth(sparse_points, depth_map, pose, depth_at_fn) -> float:
 
         raw_depth = depth_at_fn(depth_map, x, y)
         if colmap_depth > 0 and raw_depth > 0:
-            ratios.append(raw_depth / colmap_depth)
+            ratios.append(colmap_depth / raw_depth)
 
     if not ratios:
         return 1.0

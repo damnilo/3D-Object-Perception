@@ -1,6 +1,6 @@
 import numpy as np
 
-from src.mapping.projector import backproject_build, collect_sightings, ObjectSighting
+from src.mapping.projector import backproject_build, cluster_sightings, ObjectSighting
 from src.slam.colmap_runner import CameraPose
 
 def test_backproject():
@@ -23,7 +23,7 @@ def test_cluster_sightings():
         ObjectSighting(class_name="car", confidence=0.95, position_3d=np.array([5, 0, 20]), frame_name="frame_003"),
     ]
 
-    map_objects = collect_sightings(sightings, eps_meters=1.5, min_samples=2)
+    map_objects = cluster_sightings(sightings, eps_meters=1.5, min_samples=2)
 
     stop_signs = [obj for obj in map_objects if obj.class_name == "stop_sign"]
     car = [obj for obj in map_objects if obj.class_name == "car"]

@@ -54,7 +54,7 @@ def camera_trajectory(
     return line_set
 
 def render_map(map_objects: List[MapObject], poses: Dict[str, CameraPose],
-               show_trajectory: bool=True, show_axes: bool=True):
+               show_trajectory: bool=True, show_axes: bool=True, point_size: float=8.0, output_path: str = None):
 
     geometries = []
 
@@ -65,10 +65,22 @@ def render_map(map_objects: List[MapObject], poses: Dict[str, CameraPose],
         geometries.append(camera_trajectory(poses))
 
     if show_axes:
-        axes = o3d.geometry.TriangleMesh.create_coordinate_frame()
+        axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=2.0)
         geometries.append(axes)
 
-    o3d.visualization.draw_geometries(geometries)
+    if output_path:
+        vis = o3d.visualization.Visualizer()
+        vis.create_window(window_name="3D Map", width=1280, height=720, visible=False)
+        for g in geometries:
+            vis.add_geometry(g)
+
+        vis.poll_events()
+        vis.update_renderer()
+        vis.capture_screen_image(output_path)
+        
+        vis.destroy_window()
+    else:
+        o3d.visualization.draw_geometries(geometries, window_name="3D Map", width=1280, height=720)
 
 def save_map(map_objects: List[MapObject], poses: Dict[str, CameraPose], output_path: str):
 

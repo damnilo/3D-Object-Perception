@@ -47,7 +47,7 @@ class ColmapRunner:
             "--database_path", str(self.database_path),
             "--image_path", str(self.frames_dir),
             "--output_path", str(self.sparse_dir)
-        ])
+        ], check=True)
 
     def read_poses(self) -> Dict[str, CameraPose]:
         import pycolmap

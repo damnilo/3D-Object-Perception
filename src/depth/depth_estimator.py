@@ -20,8 +20,12 @@ class DepthEstimator:
 
         return depth
 
-    def depth_at(self, depth_map: np.ndarray, x: float, y: float) -> float:
+    def depth_in_bbox(self, depth_map: np.ndarray, bbox_xyxy: tuple, center_fraction: float = 0.3) -> float:
+        x1, y1, x2, y2 = bbox_xyxy
+        w, h = x2 - x1, y2 - y1
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
 
-        h, w = depth_map.shape
-        xi, yi = int(np.clip(x, 0, w - 1)), int(np.clip(y, 0, h - 1))
-        return float(depth_map[yi, xi])
+        hw, hh = w * center_fraction / 2, h * center_fraction / 2
+        patch = depth_map[int(cy - hh):int(cy + hh), int(cx - hw):int(cx + hw)]
+
+        return float(np.median(patch)) if patch.size > 0 else 0.0

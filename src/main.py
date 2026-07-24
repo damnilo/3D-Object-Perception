@@ -50,7 +50,6 @@ def run_pipeline(config: dict):
         frame_name = frame_path.name
         detections_by_frame[frame_name] = detector.detect(frame)
         depth_maps[frame_name] = depth_estimator.estimate(frame)
-        print(frame.shape[:2], depth_maps[frame_name].shape)
 
     sparse_correspondences = colmap.read_sparse_correspondences()
     
@@ -60,7 +59,8 @@ def run_pipeline(config: dict):
             continue
 
         sparse_pts = sparse_correspondences.get(frame_name, [])
-        scale = compute_depth(sparse_pts, depth_map, poses[frame_name], depth_estimator.depth_at)
+        depth_bbox = depth_estimator.depth_in_bbox(depth_map, detections_by_frame[frame_name][0].bbox)
+        scale = compute_depth(sparse_pts, depth_map, poses[frame_name], depth_bbox)
         depth_maps[frame_name] = depth_map * scale
 
     print("Projecting detections into 3D space...")
@@ -79,7 +79,12 @@ def run_pipeline(config: dict):
     save_map(map_objects, poses, str(output_dir / "map.ply"))
     print(f"Saved 3D map to {output_dir / 'map.ply'}")
 
-    render_map(map_objects, poses, str(output_dir / "map_render.png"))
+    render_map(map_objects, poses, 
+               show_trajectory=config["visualization"]["show_trajectory"], 
+               show_axes=config["visualization"]["show_axes"], 
+               point_size=config["visualization"]["point_size"],
+               output_path=str(output_dir / "map_render.png")
+    )
 
 def _parse_intrinsics(intrinsics_raw: dict) -> dict:
 
