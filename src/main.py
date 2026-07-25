@@ -3,6 +3,7 @@ from pathlib import Path
 
 import cv2
 import yaml
+import numpy as np
 from tqdm import tqdm
 
 from src.mapping.projector import collect_sightings, cluster_sightings, compute_depth
@@ -10,6 +11,12 @@ from src.slam.colmap_runner import ColmapRunner
 from src.visualization.viewer import render_map, save_map
 from src.depth.depth_estimator import DepthEstimator
 from src.detection.detector import RoadObjectDetector
+
+def sample_raw_depth(depth_map, x, y):
+    h, w = depth_map.shape
+    xi, yi = int(np.clip(x, 0, w - 1)), int(np.clip(y, 0, h - 1))
+
+    return float(depth_map[yi, xi])
 
 def run_pipeline(config: dict):
 
@@ -59,13 +66,13 @@ def run_pipeline(config: dict):
             continue
 
         sparse_pts = sparse_correspondences.get(frame_name, [])
-        depth_bbox = depth_estimator.depth_in_bbox(depth_map, detections_by_frame[frame_name][0].bbox)
-        scale = compute_depth(sparse_pts, depth_map, poses[frame_name], depth_bbox)
+        scale = compute_depth(sparse_pts, depth_map, poses[frame_name], sample_raw_depth)
         depth_maps[frame_name] = depth_map * scale
 
     print("Projecting detections into 3D space...")
     sightings = collect_sightings(detections_by_frame, depth_maps, poses, intrinsics)
-    print(f"Raw sightings: {len(sightings)}")
+    print(f"Poses recovered: {len(poses)} / {len(frame_paths)} frames")
+    print(f"Raw sightings before filtering: {len(sightings)}")
     map_objects = cluster_sightings(
         sightings,
         eps_meters=config["mapping"]["cluster_eps_meters"],
@@ -80,7 +87,7 @@ def run_pipeline(config: dict):
     print(f"Saved 3D map to {output_dir / 'map.ply'}")
 
     render_map(map_objects, poses, 
-               show_trajectory=config["visualization"]["show_trajectory"], 
+               show_trajectory=config["visualization"]["show_camera_trajectory"], 
                show_axes=config["visualization"]["show_axes"], 
                point_size=config["visualization"]["point_size"],
                output_path=str(output_dir / "map_render.png")

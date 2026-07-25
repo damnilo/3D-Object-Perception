@@ -84,12 +84,12 @@ def cluster_sightings(
     for s in sightings:
         by_class.setdefault(s.class_name, []).append(s)
 
-    for class_name, class_sightings in by_class.items():
+    for class_name, clusters in by_class.items():
 
-        if len(class_sightings) < min_samples:
+        if len(clusters) < min_samples:
             continue
 
-        positions = np.array([s.position_3d for s in class_sightings])
+        positions = np.array([s.position_3d for s in clusters])
 
         if len(positions) == 1:
             labels = np.array([1])
@@ -99,7 +99,7 @@ def cluster_sightings(
 
         for cluster_id in np.unique(labels):
             mask = labels == cluster_id
-            cluster_sightings = [s for s, m in zip(class_sightings, mask) if m]
+            cluster_sightings = [s for s, m in zip(clusters, mask) if m]
 
             if len(cluster_sightings) < min_samples:
                 continue

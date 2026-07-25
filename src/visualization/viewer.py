@@ -31,8 +31,13 @@ def object_point(
         colors.append(CLASS_COLORS.get(obj.class_name, DEFAULT_COLOR))
 
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(np.array(points))
-    pcd.colors = o3d.utility.Vector3dVector(np.array(colors))
+
+    if points:
+        pcd.points = o3d.utility.Vector3dVector(np.array(points))
+        pcd.colors = o3d.utility.Vector3dVector(np.array(colors))
+    else:
+        pcd.points = o3d.utility.Vector3dVector(np.zeros((0, 3)))
+        pcd.colors = o3d.utility.Vector3dVector(np.zeros((0, 3)))
 
     return pcd
 
@@ -52,6 +57,17 @@ def camera_trajectory(
     line_set.lines = o3d.utility.Vector2iVector(lines)
 
     return line_set
+
+def _fit_view(view_control, geometries):
+
+    bbox = geometries[0].get_axis_aligned_bounding_box()
+    for g in geometries[1:]:
+        bbox += g.get_axis_aligned_bounding_box()
+
+    view_control.set_lookat(bbox.get_center())
+    view_control.set_front([0.3, -0.5, -0.8])
+    view_control.set_up([0, -1, 0])
+    view_control.set_zoom(0.7)
 
 def render_map(map_objects: List[MapObject], poses: Dict[str, CameraPose],
                show_trajectory: bool=True, show_axes: bool=True, point_size: float=8.0, output_path: str = None):
@@ -74,13 +90,28 @@ def render_map(map_objects: List[MapObject], poses: Dict[str, CameraPose],
         for g in geometries:
             vis.add_geometry(g)
 
+        render = vis.get_render_option()
+        render.point_size = point_size
+        render.background_color = np.array([1, 1, 1])
+
+        _fit_view(vis.get_view_control(), geometries)
+
         vis.poll_events()
         vis.update_renderer()
         vis.capture_screen_image(output_path)
         
         vis.destroy_window()
     else:
-        o3d.visualization.draw_geometries(geometries, window_name="3D Map", width=1280, height=720)
+        vis = o3d.visualization.VisualizerWithKeyCallback()
+        vis.create_window(window_name="3D Map", width=1280, height=720)
+        for g in geometries:
+            vis.add_geometry(g)
+
+        vis.get_render_option().point_size = point_size
+        _fit_view(vis.get_view_control(), geometries)
+
+        vis.run()
+        vis.destroy_window()
 
 def save_map(map_objects: List[MapObject], poses: Dict[str, CameraPose], output_path: str):
 
