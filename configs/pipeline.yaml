@@ -9,7 +9,7 @@ paths:
   output_dir: "outputs"
 
 frame_extraction:
-  fps: 20
+  fps: 5
   resize_width: 1280
 
 detection:
@@ -31,7 +31,7 @@ depth:
 
 slam:
   backend: "colmap"
-  matcher: "exhaustive"
+  matcher: "sequential"
 
 mapping:
   cluster_eps_meters: 3.0

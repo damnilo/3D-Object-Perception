@@ -20,6 +20,8 @@ class ObjectSighting:
 class MapObject:
     class_name: str
     positions_3d: np.ndarray
+    points_3d: np.ndarray
+    frame_names: List[str]
     num_sightings: int
     avg_confidence: float
 
@@ -104,12 +106,15 @@ def cluster_sightings(
             if len(cluster_sightings) < min_samples:
                 continue
 
-            centroid = np.mean([s.position_3d for s in cluster_sightings], axis=0)
+            cluster_points = np.array([s.position_3d for s in cluster_sightings])
+            centroid = np.mean(cluster_points, axis=0)
             avg_confidence = float(np.mean([s.confidence for s in cluster_sightings]))
 
             map_objects.append(MapObject(
                 class_name=class_name,
                 positions_3d=centroid,
+                points_3d=cluster_points,
+                frame_names=[s.frame_name for s in cluster_sightings],
                 num_sightings=len(cluster_sightings),
                 avg_confidence=avg_confidence
             ))
@@ -128,6 +133,7 @@ def compute_depth(sparse_points, depth_map, pose, depth_at_fn) -> float:
             ratios.append(colmap_depth / raw_depth)
 
     if not ratios:
+        print("Warning: No valid depth ratios found. Returning scale factor of 1.0.")
         return 1.0
 
     return float(np.median(ratios))

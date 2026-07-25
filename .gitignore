@@ -2,6 +2,7 @@
 data/
 outputs/
 yolov8n.pt
+yolov8n-seg.pt
 .idea/
 src/__pycache__/
 scripts/__pycache__/

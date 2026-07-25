@@ -46,7 +46,12 @@ class ColmapRunner:
             "colmap", "mapper",
             "--database_path", str(self.database_path),
             "--image_path", str(self.frames_dir),
-            "--output_path", str(self.sparse_dir)
+            "--output_path", str(self.sparse_dir),
+            "--Mapper.init_min_tri_angle", "4",
+            "--Mapper.abs_pose_min_num_inliers", "15",
+            "--Mapper.ba_refine_focal_length", "0",
+            "--Mapper.ba_refine_principal_point", "0",
+            "--Mapper.ba_refine_extra_params", "0"
         ], check=True)
 
     def read_poses(self) -> Dict[str, CameraPose]:
@@ -105,3 +110,11 @@ class ColmapRunner:
             correspondences[image.name] = pts
 
         return correspondences
+
+    def read_sparse_points(self) -> np.ndarray:
+        import pycolmap
+
+        model_path = self.sparse_dir / "0"
+        reconstruction = pycolmap.Reconstruction(str(model_path))
+
+        return np.array([point.xyz for point in reconstruction.points3D.values()])

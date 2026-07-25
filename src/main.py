@@ -8,9 +8,12 @@ from tqdm import tqdm
 
 from src.mapping.projector import collect_sightings, cluster_sightings, compute_depth
 from src.slam.colmap_runner import ColmapRunner
-from src.visualization.viewer import render_map, save_map
+from src.visualization.viewer import render_map, save_map, render_flythrough
 from src.depth.depth_estimator import DepthEstimator
 from src.detection.detector import RoadObjectDetector
+from src.detection.segmenter import RoadObjectSegmenter
+from src.mapping.outline_projector import collect_outline_sightings, cluster_outline
+from src.visualization.outline_viewer import render_scene
 
 def sample_raw_depth(depth_map, x, y):
     h, w = depth_map.shape
@@ -32,11 +35,12 @@ def run_pipeline(config: dict):
     colmap.run()
     poses = colmap.read_poses()
     intrinsics_raw = colmap.read_intrinsics()
+    env_points = colmap.read_sparse_points()
     intrinsics = _parse_intrinsics(intrinsics_raw)
     print(f"Recovered {len(poses)} camera poses and intrinsics.")
 
     print("Loading detection and depth models...")
-    detector = RoadObjectDetector(
+    detector = RoadObjectSegmenter(
         confidence = config["detection"]["confidence"],
         target_classes = config["detection"]["target_classes"]
     )
@@ -55,7 +59,7 @@ def run_pipeline(config: dict):
             continue
 
         frame_name = frame_path.name
-        detections_by_frame[frame_name] = detector.detect(frame)
+        detections_by_frame[frame_name] = detector.segment(frame)
         depth_maps[frame_name] = depth_estimator.estimate(frame)
 
     sparse_correspondences = colmap.read_sparse_correspondences()
@@ -70,10 +74,10 @@ def run_pipeline(config: dict):
         depth_maps[frame_name] = depth_map * scale
 
     print("Projecting detections into 3D space...")
-    sightings = collect_sightings(detections_by_frame, depth_maps, poses, intrinsics)
+    sightings = collect_outline_sightings(detections_by_frame, depth_maps, poses, intrinsics)
     print(f"Poses recovered: {len(poses)} / {len(frame_paths)} frames")
     print(f"Raw sightings before filtering: {len(sightings)}")
-    map_objects = cluster_sightings(
+    map_objects = cluster_outline(
         sightings,
         eps_meters=config["mapping"]["cluster_eps_meters"],
         min_samples=config["mapping"]["cluster_min_samples"]
@@ -83,15 +87,17 @@ def run_pipeline(config: dict):
 
     output_dir = Path(config["paths"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    save_map(map_objects, poses, str(output_dir / "map.ply"))
+    save_map(env_points, str(output_dir / "map.ply"))
     print(f"Saved 3D map to {output_dir / 'map.ply'}")
+    print(len(map_objects), len(poses))
 
-    render_map(map_objects, poses, 
-               show_trajectory=config["visualization"]["show_camera_trajectory"], 
-               show_axes=config["visualization"]["show_axes"], 
-               point_size=config["visualization"]["point_size"],
-               output_path=str(output_dir / "map_render.png")
+    render_scene(map_objects, poses,
+                 output_path=str(output_dir / "map_render.png")
     )
+
+    # render_flythrough(map_objects, poses, env_points,
+    #                   output_path=str(output_dir / "map_flythrough.mp4")
+    # )
 
 def _parse_intrinsics(intrinsics_raw: dict) -> dict:
 
