@@ -15,7 +15,7 @@ from src.visualization.outline_viewer import render_scene
 from src.detection.detector import RoadObjectDetector
 from src.detection.segmenter import RoadObjectSegmenter
 
-SCALE_OUTLIER_RATIO = 5.0
+SCALE_OUTLIER_RATIO = 4.0
 
 def sample_raw_depth(depth_map, x, y):
 
@@ -42,7 +42,7 @@ def _parse_intrinsics(intrinsics_raw: dict) -> dict:
 
 def run_slam(config: dict, frames_dir: Path):
 
-    print("Running COLMAP for camera pose estimation...")
+    print("Running visual odometry for camera pose estimation...")
     slam = VisualOdometry(
         frames_dir=str(frames_dir),
         intrinsics=config.get("slam", {}).get("intrinsics"),
@@ -109,6 +109,10 @@ def apply_scales(depth_maps, detection_per_frame, frame_scales, outlier_ratio: f
     valid_scales = np.array([s for s in frame_scales.values() if s is not None])
     median_scale = float(np.median(valid_scales)) if len(valid_scales) > 0 else 1.0
 
+    if median_scale <= 0:
+        print("Warning: Median scale is non-positive. Dropping all frames.")
+        return {}, {}
+
     scaled_depth_maps = {}
     reliable_frames = set()
 
@@ -167,6 +171,9 @@ def save_and_render(config: dict, map_objects, poses, env_points):
 
     render_scene(map_objects, poses, output_path=str(output_dir / "scene.png"))
 
+    if config.get("visualization", {}).get("flythrough", False):
+        render_flythrough(map_objects, poses, env_points, output_path=str(output_dir / "flythrough.mp4"))
+
 def run_pipeline(config: dict):
 
     frames_dir = Path(config["paths"]["frames_dir"])
@@ -184,7 +191,8 @@ def run_pipeline(config: dict):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="3D Object Perception Pipeline")
-    parser.add_argument("--config", type=str, default="configs\pipeline.yaml")
+    parser.add_argument("--config", type=str, default="configs/pipeline.yaml")
+    parser.add_argument("--flythrough", action="store_true", help="Enable flythrough rendering")
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:

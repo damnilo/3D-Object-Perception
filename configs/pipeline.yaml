@@ -3,7 +3,7 @@
 # ===============================================
 
 paths:
-  raw_video: "data\\1ffad8eba31588461aa76d8c8fd0be7e.mp4"
+  raw_video: "data/1ffad8eba31588461aa76d8c8fd0be7e.mp4"
   frames_dir: "data/processed/frames"
   colmap_workspace: "data/processed/colmap"
   output_dir: "outputs"
@@ -30,8 +30,7 @@ depth:
   device: "cpu"
 
 slam:
-  backend: "colmap"
-  matcher: "exhaustive"
+  backend: "orb_vo"
 
 mapping:
   cluster_eps_meters: 1.0

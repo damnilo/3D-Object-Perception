@@ -120,7 +120,7 @@ class VisualOdometry:
 
             inlier_mask = mask_pose.ravel().astype(bool)
 
-            scale = self._estime_relative_scale(
+            scale = self._estimate_relative_scale(
                 pts_prev[inlier_mask], pts_curr[inlier_mask], K, R_world, t_world, R_rel, t_rel
             )
 
@@ -143,7 +143,7 @@ class VisualOdometry:
 
         print(f"Visual odometry completed. Registered {num_registered} / {len(frame_paths)} frames, Failed: {num_failed}")
 
-    def _estime_relative_scale(self, pts_prev, pts_curr, K, R_world, t_world, R_rel, t_rel, default_scale: float=1.0) -> float:
+    def _estimate_relative_scale(self, pts_prev, pts_curr, K, R_world, t_world, R_rel, t_rel, default_scale: float=1.0) -> float:
 
         P_prev = K @ np.hstack([R_world.T, (-R_world.T @ t_world).reshape(3, 1)])
 

@@ -116,7 +116,7 @@ def collect_outline_sightings(
         contour_stride: int=2
 ) -> List[ObjectOutlineSighting]:
 
-    sigthings = []
+    sightings = []
 
     for frame_name, detections in frame_segment.items():
         if frame_name not in depth_maps or frame_name not in poses:
@@ -134,14 +134,14 @@ def collect_outline_sightings(
             if len(outline_3d) < 3:
                 continue
 
-            sigthings.append(ObjectOutlineSighting(
+            sightings.append(ObjectOutlineSighting(
                 class_name=det.class_name,
                 confidence=det.confidence,
                 frame_name=frame_name,
                 outline_3d=outline_3d,
                 centroid=outline_3d.mean(axis=0)
             ))
-    return sigthings
+    return sightings
 
 def cluster_outline(sightings: List[ObjectOutlineSighting], 
                     eps_meters: float = 1.5, min_samples: int = 2) -> List[OutlineMapObject]:

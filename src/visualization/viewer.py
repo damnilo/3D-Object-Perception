@@ -43,16 +43,16 @@ def obj_bbox(map_objects: List[MapObject], min_size: float=0.5) -> List[o3d.geom
 
     for obj in map_objects:
         pts = np.atleast_2d(obj.points_3d)
-        min, max = pts.min(axis=0), pts.max(axis=0)
-        pad = np.maximum(min_size - (max - min), 0) / 2
+        pt_min, pt_max = pts.min(axis=0), pts.max(axis=0)
+        pad = np.maximum(min_size - (pt_max - pt_min), 0) / 2
 
-        min, max = min - pad, max + pad
+        pt_min, pt_max = pt_min - pad, pt_max + pad
 
         corners = np.array([
-            [min[0], min[1], min[2]], [max[0], min[1], min[2]],
-            [max[0], max[1], min[2]], [min[0], max[1], min[2]],
-            [min[0], min[1], max[2]], [max[0], min[1], max[2]],
-            [max[0], max[1], max[2]], [min[0], max[1], max[2]]
+            [pt_min[0], pt_min[1], pt_min[2]], [pt_max[0], pt_min[1], pt_min[2]],
+            [pt_max[0], pt_max[1], pt_min[2]], [pt_min[0], pt_max[1], pt_min[2]],
+            [pt_min[0], pt_min[1], pt_max[2]], [pt_max[0], pt_min[1], pt_max[2]],
+            [pt_max[0], pt_max[1], pt_max[2]], [pt_min[0], pt_max[1], pt_max[2]]
         ])
 
         color = CLASS_COLORS.get(obj.class_name, DEFAULT_COLOR)
@@ -200,6 +200,7 @@ def render_flythrough(map_objects: List[MapObject], poses: Dict[str, CameraPose]
 
     box_geoms = obj_bbox(map_objects)
     box_reveal_frame = []
+    box_original_colors = [np.asarray(box.colors)[0].copy() for box in box_geoms]
 
     for obj in map_objects:
         earliest = min(frame_order.get(f, float('inf')) for f in obj.frame_names)
@@ -217,20 +218,26 @@ def render_flythrough(map_objects: List[MapObject], poses: Dict[str, CameraPose]
 
     revealed_points = []
 
-    for i in range(len(sorted_poses) - 1):
+    num_transitions = len(sorted_poses) - 1
+    if env_points is not None and len(env_points) > 0:
+
+        chunk = len(env_points) // num_transitions
+
+    for i in range(num_transitions):
         p0, p1 = sorted_poses[i], sorted_poses[i + 1]
 
         if env_points is not None and len(env_points) > 0:
-            chunk = len(env_points) // len(sorted_poses)
-            revealed_points.extend(env_points[i * chunk:(i + 1) * chunk])
+            start = i * chunk
+            end = (i + 1) * chunk if i < num_transitions - 1 else len(env_points)
+            revealed_points.extend(env_points[start:end])
             env_cloud.points = o3d.utility.Vector3dVector(np.array(revealed_points))
             env_cloud.colors = o3d.utility.Vector3dVector(
                 np.tile(np.array([[0.5, 0.5, 0.5]]), (len(revealed_points), 1))
             )
             vis.update_geometry(env_cloud)
 
-        for box, reveal_at in zip(box_geoms, box_reveal_frame):
-            box.paint_uniform_color(box.colors[0] if i >= reveal_at else [0, 0, 0])
+        for box, reveal_at, orig_color in zip(box_geoms, box_reveal_frame, box_original_colors):
+            box.paint_uniform_color(orig_color if i >= reveal_at else [0, 0, 0])
             vis.update_geometry(box)
 
         for step in range(steps_per_pose):
