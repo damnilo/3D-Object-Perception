@@ -4,7 +4,7 @@ import numpy as np
 import open3d as o3d
 
 from src.mapping.outline_projector import OutlineMapObject
-from src.slam.colmap_runner import CameraPose
+from src.slam.visual_odometry import CameraPose
 
 CLASS_COLORS = {
     "car": [0.2, 0.4, 0.9],

@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 
-from src.slam.colmap_runner import CameraPose
+from src.slam.visual_odometry import CameraPose
 from src.mapping.projector import backproject_build
 
 if TYPE_CHECKING:
@@ -27,19 +27,66 @@ class OutlineMapObject:
     num_sightings: int = 0
     avg_confidence: float = 0.0
 
-def extract_contour(mask: np.ndarray, stride: int=2) -> np.ndarray:
+def extract_contour(mask: np.ndarray, stride: int=2,
+                    erode_px: int=3, simplify_eps: float=2.0) -> np.ndarray:
 
-    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    mask_u8 = mask.astype(np.uint8)
+
+    if erode_px > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_px, erode_px))
+        eroded = cv2.erode(mask_u8, kernel)
+
+        if eroded.sum() > 0:
+            mask_u8 = eroded
+        
+    contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return np.empty((0, 2))
 
     largest = max(contours, key=cv2.contourArea)
+
+    if simplify_eps > 0:
+        param = cv2.arcLength(largest, True)
+        largest = cv2.approxPolyDP(largest, epsilon=simplify_eps, closed=True)
+        if len(largest) < 3 and param > 0:
+            largest = max(contours, key=cv2.contourArea)
+
     points = largest.reshape(-1, 2)
 
     if stride > 1:
         points = points[::stride]
 
     return points
+
+def _reject_outliers(pts_3d: List[np.ndarray], mad_thresh: float=3.0) -> np.ndarray:
+
+    if len(pts_3d) == 0:
+        return np.empty((0, 3))
+
+    pts = np.array(pts_3d)
+
+    if len(pts) < 4:
+        return pts
+
+    centroid = np.median(pts, axis=0)
+    dists = np.linalg.norm(pts - centroid, axis=1)
+
+    median_dist = np.median(dists)
+    mad = np.median(np.abs(dists - median_dist))
+
+    if mad == 0:
+        return pts
+
+    modified_z = 0.6745 * (dists - median_dist) / mad
+    keep = np.abs(modified_z) < mad_thresh
+
+    filtered = pts[keep]
+
+    if len(filtered) < 3:
+        return pts
+
+    return filtered 
+    
 
 def backproject_outline(contour: np.ndarray, depth_map: np.ndarray, 
                         intrinsics: Dict, pose: CameraPose) -> np.ndarray:
@@ -57,7 +104,9 @@ def backproject_outline(contour: np.ndarray, depth_map: np.ndarray,
 
         pts_3d.append(backproject_build((x, y), depth, intrinsics, pose))
 
-    return np.array(pts_3d) if pts_3d else np.empty((0, 3))
+    pts_3d = _reject_outliers(pts_3d)
+
+    return np.array(pts_3d)
 
 def collect_outline_sightings(
         frame_segment: Dict[str, List['SegmentDetection']],
@@ -112,19 +161,23 @@ def cluster_outline(sightings: List[ObjectOutlineSighting],
         if len(centroids) == 1:
             labels = np.array([1])
         else:
-            Z = linkage(centroids, method='single')
+            Z = linkage(centroids, method='complete')
             labels = fcluster(Z, t=eps_meters, criterion='distance')
 
         unique_labels = np.unique(labels)
         for label in unique_labels:
-            mask = labels == label
             cluster_sightings = [s for s, l in zip(clusters, labels) if l == label]
 
             if len(cluster_sightings) < min_samples:
                 continue
 
             centroid = np.mean([s.centroid for s in cluster_sightings], axis=0)
+            spread = np.mean([np.linalg.norm(s.centroid - centroid) for s in cluster_sightings])
             avg_conf = float(np.mean([s.confidence for s in cluster_sightings]))
+
+            if spread > eps_meters:
+                print(f"Note: {class_name} cluster has {len(cluster_sightings)} "
+                      f"sightings with spread {spread:.2f}m, which exceeds eps_meters {eps_meters}.")
 
             map_objects.append(OutlineMapObject(
                 class_name=class_name,

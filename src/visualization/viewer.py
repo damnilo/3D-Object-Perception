@@ -5,7 +5,7 @@ import open3d as o3d
 import cv2
 
 from src.mapping.projector import MapObject
-from src.slam.colmap_runner import CameraPose
+from src.slam.visual_odometry import CameraPose
 
 CLASS_COLORS = {
     "car": [0.2, 0.4, 0.9],

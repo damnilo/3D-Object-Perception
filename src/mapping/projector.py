@@ -4,7 +4,7 @@ from typing import List, Dict, TYPE_CHECKING
 import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 
-from src.slam.colmap_runner import CameraPose
+from src.slam.visual_odometry import CameraPose
 
 if TYPE_CHECKING:
     from src.detection.detector import Detection
@@ -121,7 +121,7 @@ def cluster_sightings(
 
     return map_objects
 
-def compute_depth(sparse_points, depth_map, pose, depth_at_fn) -> float:
+def compute_depth(sparse_points, depth_map, pose, depth_at_fn, min_points: int = 5) -> float:
 
     ratios = []
     for x, y, point_world in sparse_points:
@@ -132,8 +132,8 @@ def compute_depth(sparse_points, depth_map, pose, depth_at_fn) -> float:
         if colmap_depth > 0 and raw_depth > 0:
             ratios.append(colmap_depth / raw_depth)
 
-    if not ratios:
+    if  len(ratios) < min_points:
         print("Warning: No valid depth ratios found. Returning scale factor of 1.0.")
-        return 1.0
+        return None
 
     return float(np.median(ratios))
