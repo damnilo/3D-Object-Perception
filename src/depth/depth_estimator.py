@@ -18,7 +18,11 @@ class DepthEstimator:
         result = self.pipeline(image)
         depth = np.array(result["depth"], dtype=np.float32)
 
-        return depth
+        inv_depth = np.zeros_like(depth)
+        valid = depth > 1e-6
+        np.divide(1.0, depth, out=inv_depth, where=valid)
+
+        return inv_depth
 
     def depth_in_bbox(self, depth_map: np.ndarray, bbox_xyxy: tuple, center_fraction: float = 0.3) -> float:
         x1, y1, x2, y2 = bbox_xyxy

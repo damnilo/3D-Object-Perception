@@ -1,14 +1,16 @@
 import numpy as np
 
 from src.mapping.projector import backproject_build, cluster_sightings, ObjectSighting
-from src.slam.colmap_runner import CameraPose
+from src.slam.visual_odometry import CameraPose
 
 def test_backproject():
     intrinsics = {'fx': 500, 'fy': 500, 'cx': 320, 'cy': 240}
     pose = CameraPose(
         frame_name="frame_001",
         rotation=np.eye(3),
-        translation=np.array([0, 0, 0])
+        translation=np.array([0, 0, 0]),
+        num_points3D=0,
+        mean_reprojection_error=0.0
     )
 
     point = backproject_build((320, 240), 10, intrinsics, pose)

@@ -136,7 +136,7 @@ class VisualOdometry:
             )
 
             self._triangulate_store(pts_prev[inlier_mask], pts_curr[inlier_mask], 
-                                    K, R_world, t_world, R_rel, t_rel, frame_name)
+                                    K, R_world, t_world, R_rel, t_rel, frame_name=frame_name, scale=scale)
 
             prev_gray, prev_kp, prev_des = gray, kp, des
             num_registered += 1
@@ -145,11 +145,11 @@ class VisualOdometry:
 
     def _estime_relative_scale(self, pts_prev, pts_curr, K, R_world, t_world, R_rel, t_rel, default_scale: float=1.0) -> float:
 
-        R_prev_world = R_world @ R_rel.T
-        t_prev_world = t_world - R_prev_world @ t_rel.flatten()
+        P_prev = K @ np.hstack([R_world.T, (-R_world.T @ t_world).reshape(3, 1)])
 
-        P_prev = K @ np.hstack([R_prev_world.T, (-R_prev_world.T @ t_prev_world).reshape(3, 1)])
-        P_curr_unit = K @ np.hstack([R_world.T, (-R_world.T @ (t_world + R_world @ t_rel.flatten())).reshape(3, 1)])
+        R_curr_unit = R_world @ R_rel
+        t_curr_unit = t_world + R_world @ t_rel.flatten()
+        P_curr_unit = K @ np.hstack([R_curr_unit.T, (-R_curr_unit.T @ t_curr_unit).reshape(3, 1)])
 
         pts4d = cv2.triangulatePoints(P_prev, P_curr_unit, pts_prev.T, pts_curr.T)
         pts3d_prev = (pts4d[:3] / pts4d[3]).T
@@ -192,10 +192,10 @@ class VisualOdometry:
         self._last_scale = scale
         return scale
 
-    def _triangulate_store(self, pts_prev, pts_curr, K, R_world, t_world, R_rel, t_rel, frame_name):
+    def _triangulate_store(self, pts_prev, pts_curr, K, R_world, t_world, R_rel, t_rel, frame_name, scale):
 
         R_prev_world = R_world @ R_rel.T
-        t_prev_world = t_world - R_prev_world @ t_rel.flatten()
+        t_prev_world = t_world - R_prev_world @ (t_rel.flatten() * scale)
 
         P_prev = K @ np.hstack([R_prev_world.T, (-R_prev_world.T @ t_prev_world).reshape(3, 1)])
         P_curr = K @ np.hstack([R_world.T, (-R_world.T @ t_world).reshape(3, 1)])

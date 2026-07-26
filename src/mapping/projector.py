@@ -96,7 +96,7 @@ def cluster_sightings(
         if len(positions) == 1:
             labels = np.array([1])
         else:
-            Z = linkage(positions, method='single')
+            Z = linkage(positions, method='complete')
             labels = fcluster(Z, t=eps_meters, criterion='distance')
 
         for cluster_id in np.unique(labels):

@@ -15,7 +15,7 @@ from src.visualization.outline_viewer import render_scene
 from src.detection.detector import RoadObjectDetector
 from src.detection.segmenter import RoadObjectSegmenter
 
-SCALE_OUTLIER_RATIO = 4.0
+SCALE_OUTLIER_RATIO = 5.0
 
 def sample_raw_depth(depth_map, x, y):
 
