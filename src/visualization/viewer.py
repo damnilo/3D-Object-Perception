@@ -4,7 +4,6 @@ import numpy as np
 import open3d as o3d
 import cv2
 
-from src.mapping.projector import MapObject
 from src.slam.visual_odometry import CameraPose
 
 CLASS_COLORS = {
@@ -31,7 +30,7 @@ def env_point_cloud(sparse_points: Optional[np.ndarray]) -> o3d.geometry.PointCl
 
     return pcd
 
-def obj_bbox(map_objects: List[MapObject], min_size: float=0.5) -> List[o3d.geometry.LineSet]:
+def obj_bbox(map_objects: List, min_size: float=0.5) -> List[o3d.geometry.LineSet]:
 
     edges = [
         [0,1], [1,2], [2,3], [3,0],
@@ -42,7 +41,17 @@ def obj_bbox(map_objects: List[MapObject], min_size: float=0.5) -> List[o3d.geom
     boxes = []
 
     for obj in map_objects:
-        pts = np.atleast_2d(obj.points_3d)
+
+        if hasattr(obj, "points_3d"):
+
+            pts = np.atleast_2d(obj.points_3d)
+        elif hasattr(obj, "outlines"):
+
+            pts = np.vstack(obj.outlines) if obj.outlines else np.atleast_2d(obj.centroid)
+        else:
+
+            continue
+        
         pt_min, pt_max = pts.min(axis=0), pts.max(axis=0)
         pad = np.maximum(min_size - (pt_max - pt_min), 0) / 2
 
@@ -133,7 +142,7 @@ def _build_scene(map_objects, poses, environment_points, show_trajectory, show_g
 
     return geometries
 
-def render_map(map_objects: List[MapObject], poses: Dict[str, CameraPose],
+def render_map(map_objects: List, poses: Dict[str, CameraPose],
                environment_points: Optional[np.ndarray] = None,
                show_trajectory: bool=True, show_axes: bool=True, show_grid: bool=True,
                point_size: float=8.0, output_path: str = None):
@@ -176,7 +185,7 @@ def _slerp(r0, r1, t):
 
     return slerp([t])[0].as_matrix()
 
-def render_flythrough(map_objects: List[MapObject], poses: Dict[str, CameraPose],
+def render_flythrough(map_objects: List, poses: Dict[str, CameraPose],
                       env_points: Optional[np.ndarray], output_path: str,
                        fps: int=5, width: int=1280, height: int=720, point_size: float=8.0,
                        steps_per_pose: int=8):

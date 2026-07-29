@@ -19,19 +19,32 @@ class CameraPose:
 class VisualOdometry:
 
     def __init__(self, frames_dir: str, intrinsics: Optional[Dict]=None,
-                 min_matches: int=30, max_features: int=3000):
+                 min_matches: int=30, max_features: int=3000, 
+                 dynamic_masks: Optional[Dict[str, np.ndarray]]=None,
+                 min_tracked_features: int=800):
 
         self.frames_dir = Path(frames_dir)
         self.min_matches = min_matches
         self.max_features = max_features
+        self.dynamic_masks = dynamic_masks or {}
+        self.min_tracked_features = min_tracked_features    
 
         self._intrinsics = intrinsics
         self._poses: Dict[str, CameraPose] = {}
         self._sparse_points: List[list] = []
         self._correspondences: Dict[str, np.ndarray] = {}
 
-        self._orb = cv2.ORB_create(nfeatures=self.max_features)
-        self._matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        self._feature_params = dict(
+            maxCorners=self.max_features,
+            qualityLevel=0.01,
+            minDistance=8,
+            blockSize=7
+        )
+        self._lk_params = dict(
+            winSize=(21, 21),
+            maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+        )
         self._prev_triangulated: Dict[tuple, np.ndarray] = {}
 
         self._tracks: Dict[int, Dict] = {}
@@ -43,6 +56,67 @@ class VisualOdometry:
         self._ba_optimizable_tail = 4
         self._ba_warm_start_poses: Dict[str, np.ndarray] = {}
         self._ba_warm_start_points: Dict[int, np.ndarray] = {}
+
+    def _mask_for_frame(self, frame_name: str, gray_shape) -> Optional[np.ndarray]:
+
+        dyn_mask = self.dynamic_masks.get(frame_name)
+        if dyn_mask is None:
+            return None
+
+        allowed = np.where(dyn_mask, 0, 255).astype(np.uint8)
+        return allowed
+
+    def _detect_features(self, gray, frame_name, existing_pts=None) -> np.ndarray:
+
+        mask = self._mask_for_frame(frame_name, gray.shape)
+
+        if existing_pts is not None and len(existing_pts) > 0:
+
+            if mask is None:
+                mask = np.full(gray.shape, 255, dtype=np.uint8)
+
+            else:
+                mask = mask.copy()
+
+            for x, y in existing_pts:
+
+                cv2.circle(mask, (int(x), int(y)), self._feature_params['minDistance'], 0, -1)
+
+        pts = cv2.goodFeaturesToTrack(gray, mask=mask, **self._feature_params)
+        return pts.reshape(-1, 2) if pts is not None else np.empty((0, 2), dtype=np.float32)
+
+    def _track_features(self, prev_gray, gray, prev_pts, frame_name):
+
+        if len(prev_pts) == 0:
+            return np.empty((0, 2), dtype=np.float32), np.empty((0,), dtype=bool)
+
+        prev_pts_cv = prev_pts.reshape(-1, 1, 2).astype(np.float32)
+        curr_pts_cv, status, _ = cv2.calcOpticalFlowPyrLK(
+            prev_gray, gray, prev_pts_cv, None, **self._lk_params
+        )
+
+        status = status.reshape(-1).astype(bool)
+        curr_pts = curr_pts_cv.reshape(-1, 2)
+
+        h, w = gray.shape
+        in_bounds = (
+            (curr_pts[:, 0] >= 0) & (curr_pts[:, 0] < w) &
+            (curr_pts[:, 1] >= 0) & (curr_pts[:, 1] < h)
+        )
+        status &= in_bounds
+
+        dyn_mask = self.dynamic_masks.get(frame_name)
+        if dyn_mask is not None:
+
+            for i in np.where(status)[0]:
+
+                xi = min(max(int(round(curr_pts[i, 0])), 0), w - 1)
+                yi = min(max(int(round(curr_pts[i, 1])), 0), h - 1)
+
+                if dyn_mask[yi, xi]:
+                    status[i] = False
+
+        return curr_pts, status
 
     def _pose_to_vec(self, R: np.ndarray, t: np.ndarray) -> np.ndarray:
 
@@ -78,37 +152,37 @@ class VisualOdometry:
 
         return sparsity
 
-    def _update_tracks(self, prev_kp, kp, matches, inlier_mask,
+    def _update_tracks(self, prev_track_ids, orig_idx, curr_pts,
                        prev_frame_name, curr_frame_name, inlier_world_pts, valid_mask):
 
-        inlier_matches_all = [m for m, keep in zip(matches, inlier_mask) if keep]
-        inlier_matches = [m for m, keep in zip(inlier_matches_all, valid_mask) if keep]
-
         new_active_tracks = {}
+        valid_ptr = 0
 
-        for m, world_pt in zip(inlier_matches, inlier_world_pts):
+        for j in range(len(curr_pts)):
 
-            prev_idx, curr_idx = m.queryIdx, m.trainIdx
-            x_curr, y_curr = kp[curr_idx].pt
+            if not valid_mask[j]:
+                continue
 
-            if prev_idx in self._active_tracks:
+            world_pt = inlier_world_pts[valid_ptr]
+            valid_ptr += 1
 
-                track_id = self._active_tracks[prev_idx]
+            x_curr, y_curr = curr_pts[j]
+            prev_track_id = prev_track_ids.get(int(orig_idx[j]))
+
+            if prev_track_id is not None:
+
+                track_id = prev_track_id
                 self._tracks[track_id]['obs'][curr_frame_name] = (x_curr, y_curr)
             else:
 
                 track_id = self._next_track_id
                 self._next_track_id += 1
-                x_prev, y_prev = prev_kp[prev_idx].pt
                 self._tracks[track_id] = {
-                    'point_3d': world_pt,
-                    'obs': {
-                        prev_frame_name: (x_prev, y_prev),
-                        curr_frame_name: (x_curr, y_curr)
-                    }
+                    'point_3d': None,
+                    'obs': {curr_frame_name: (x_curr, y_curr)}
                 }
 
-            new_active_tracks[curr_idx] = track_id
+            new_active_tracks[j] = track_id
 
         self._active_tracks = new_active_tracks
 
@@ -303,6 +377,7 @@ class VisualOdometry:
             tid: pt for tid, pt in self._ba_warm_start_points.items() if tid in track_idx
         }
 
+
     def _default_intrinsics(self, width: int, height: int) -> Dict:
 
         f = 1.2 * max(width, height)
@@ -331,7 +406,8 @@ class VisualOdometry:
         ])
 
         prev_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-        prev_kp, prev_des = self._orb.detectAndCompute(prev_gray, None)
+        prev_pts = self._detect_features(prev_gray, frame_paths[0].name)
+        prev_track_ids = {}
 
         R_world = np.eye(3)
         t_world = np.zeros(3)
@@ -358,29 +434,38 @@ class VisualOdometry:
                 continue
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            kp, des = self._orb.detectAndCompute(gray, None)
+            curr_pts, status = self._track_features(prev_gray, gray, prev_pts, frame_name)
 
-            if des is None or prev_des is None or len(des) < 8 or len(prev_des) < 8:
-                print(f"Warning: Not enough features detected in frame {frame_name}. Skipping.")
+            if status.sum() < 8:
+
+                print(f"Warning: Not enough tracked features ({status.sum()}) for frame {frame_name}. Skipping.")
                 num_failed += 1
+                prev_gray = gray
+                prev_pts = self._detect_features(gray, frame_name)
+                prev_track_ids = {}
                 continue
 
-            matches = sorted(self._matcher.match(prev_des, des), key=lambda x: x.distance)
+            pts_prev = prev_pts[status]
+            pts_curr = curr_pts[status]
+            kept_orig_idx = np.where(status)[0]
 
-            if len(matches) < self.min_matches:
-                print(f"Warning: Not enough matches ({len(matches)}) between frames "
+            if len(pts_prev) < self.min_matches:
+                print(f"Warning: Not enough matches ({len(pts_prev)}) between frames "
                       f"{frame_paths[i-1].name} and {frame_name}. Skipping.")
                 num_failed += 1
+                prev_gray = gray
+                prev_pts = self._detect_features(gray, frame_name)
+                prev_track_ids = {}
                 continue
-
-            pts_prev = np.array([prev_kp[m.queryIdx].pt for m in matches])
-            pts_curr = np.array([kp[m.trainIdx].pt for m in matches])
 
             E, mask = cv2.findEssentialMat(pts_curr, pts_prev, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
 
             if E is None:
                 print(f"Warning: Essential matrix could not be computed for frame {frame_name}. Skipping.")
                 num_failed += 1
+                prev_gray = gray
+                prev_pts = self._detect_features(gray, frame_name)
+                prev_track_ids = {}
                 continue
 
             inlier_count, R_rel, t_rel, mask_pose = cv2.recoverPose(E, pts_curr, pts_prev, K, mask=mask)
@@ -388,6 +473,9 @@ class VisualOdometry:
             if inlier_count < self.min_matches // 2:
                 print(f"Warning: Not enough inliers ({inlier_count}) for frame {frame_name}. Skipping.")
                 num_failed += 1
+                prev_gray = gray
+                prev_pts = self._detect_features(gray, frame_name)
+                prev_track_ids = {}
                 continue
 
             rel_angle_deg = np.degrees(np.arccos(np.clip((np.trace(R_rel) - 1) / 2, -1.0, 1.0)))
@@ -397,6 +485,9 @@ class VisualOdometry:
                 print(f"Warning: Relative rotation ({rel_angle_deg:.2f} deg) exceeds "
                       f"threshold ({max_rel_angle} deg) for frame {frame_name}. Skipping.")
                 num_failed += 1
+                prev_gray = gray
+                prev_pts = self._detect_features(gray, frame_name)
+                prev_track_ids = {}
                 continue
 
             inlier_mask = mask_pose.ravel().astype(bool)
@@ -419,8 +510,11 @@ class VisualOdometry:
             world_points, valid_mask = self._triangulate_store(pts_prev[inlier_mask], pts_curr[inlier_mask], 
                                     K, R_world, t_world, R_rel, t_rel, frame_name=frame_name, scale=scale)
 
+            final_orig_idx = kept_orig_idx[inlier_mask]
+            final_curr_pts = pts_curr[inlier_mask]
             self._update_tracks(
-                prev_kp, kp, matches, inlier_mask,
+                prev_track_ids, orig_idx=final_orig_idx,
+                curr_pts=final_curr_pts,
                 prev_frame_name=frame_paths[i-1].name,
                 curr_frame_name=frame_name,
                 inlier_world_pts=world_points,
@@ -436,7 +530,19 @@ class VisualOdometry:
                 latest_pose = self._poses[frame_name]
                 R_world, t_world = latest_pose.rotation.copy(), latest_pose.translation.copy()
 
-            prev_gray, prev_kp, prev_des = gray, kp, des
+            surviving_pts = pts_curr[inlier_mask]
+            surviving_track_ids = dict(self._active_tracks)
+
+            if len(surviving_pts) < self.min_tracked_features:
+
+                new_pts = self._detect_features(gray, frame_name, surviving_pts)
+                combined_pts = np.vstack([surviving_pts, new_pts]) if len(new_pts) > 0 else surviving_pts
+            else:
+                combined_pts = surviving_pts
+
+            prev_gray = gray
+            prev_pts = combined_pts
+            prev_track_ids = surviving_track_ids
             num_registered += 1
 
         print(f"Visual odometry completed. Registered {num_registered} / {len(frame_paths)} frames, Failed: {num_failed}")

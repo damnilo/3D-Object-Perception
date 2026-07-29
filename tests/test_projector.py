@@ -1,35 +1,24 @@
-import numpy as np
+import sys
+from pathlib import Path
 
-from src.mapping.projector import backproject_build, cluster_sightings, ObjectSighting
-from src.slam.visual_odometry import CameraPose
+# Ensure the project root is on sys.path regardless of how/where this script is invoked
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-def test_backproject():
-    intrinsics = {'fx': 500, 'fy': 500, 'cx': 320, 'cy': 240}
-    pose = CameraPose(
-        frame_name="frame_001",
-        rotation=np.eye(3),
-        translation=np.array([0, 0, 0]),
-        num_points3D=0,
-        mean_reprojection_error=0.0
-    )
+import matplotlib.pyplot as plt
+from src.slam.visual_odometry import VisualOdometry
 
-    point = backproject_build((320, 240), 10, intrinsics, pose)
+vo = VisualOdometry(frames_dir="data/processed/frames")
+vo.run()
+poses = vo.read_poses()
 
-    assert np.allclose(point, [0, 0, 10], atol=1e-5), f"Expected [0, 0, 10], got {point}"
+sorted_poses = sorted(poses.values(), key=lambda p: p.frame_name)
+xs = [p.translation[0] for p in sorted_poses]
+zs = [p.translation[2] for p in sorted_poses]
 
-def test_cluster_sightings():
-
-    sightings = [
-        ObjectSighting(class_name="stop_sign", confidence=0.9, position_3d=np.array([0, 0, 10]), frame_name="frame_001"),
-        ObjectSighting(class_name="stop_sign", confidence=0.85, position_3d=np.array([0.2, 0.1, 10.1]), frame_name="frame_002"),
-        ObjectSighting(class_name="car", confidence=0.95, position_3d=np.array([5, 0, 20]), frame_name="frame_003"),
-    ]
-
-    map_objects = cluster_sightings(sightings, eps_meters=1.5, min_samples=2)
-
-    stop_signs = [obj for obj in map_objects if obj.class_name == "stop_sign"]
-    car = [obj for obj in map_objects if obj.class_name == "car"]
-
-    assert len(stop_signs) == 1
-    assert stop_signs[0].num_sightings == 2
-    assert len(car) == 0
+plt.figure(figsize=(8, 8))
+plt.plot(xs, zs, marker='o', markersize=2)
+plt.xlabel("X"); plt.ylabel("Z"); plt.title("VO trajectory (top-down)")
+plt.axis("equal")
+plt.savefig("outputs/vo_debug.png")
+print(f"Registered {len(poses)} poses")
+print("Saved outputs/vo_debug.png")

@@ -10,4 +10,4 @@ src/*/__pycache__/
 tests/__pycache__/
 sanity_check.py
 mapper_log.txt
-tests/test.py
+tests/

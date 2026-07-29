@@ -6,7 +6,7 @@ import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
 
 from src.slam.visual_odometry import CameraPose
-from src.mapping.projector import backproject_build
+from src.mapping.projector import backproject_build, sample_patch_depth
 
 if TYPE_CHECKING:
     from src.detection.segmenter import SegmentDetection
@@ -95,9 +95,7 @@ def backproject_outline(contour: np.ndarray, depth_map: np.ndarray,
     pts_3d = []
 
     for x, y in contour:
-        xi = int(np.clip(x, 0, w - 1))
-        yi = int(np.clip(y, 0, h - 1))
-        depth = float(depth_map[yi, xi])
+        depth = sample_patch_depth(depth_map, x, y)
 
         if depth <= 0:
             continue

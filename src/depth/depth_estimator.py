@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from transformers import pipeline
 
@@ -14,15 +15,25 @@ class DepthEstimator:
 
         rgb = frame_bgr[..., ::-1]
         image = Image.fromarray(rgb)
+        h, w = frame_bgr.shape[:2]
 
         result = self.pipeline(image)
-        depth = np.array(result["depth"], dtype=np.float32)
 
-        inv_depth = np.zeros_like(depth)
-        valid = depth > 1e-6
-        np.divide(1.0, depth, out=inv_depth, where=valid)
+        raw = result["predicted_depth"]
+        if raw.dim() == 2:
 
-        return inv_depth
+            raw = raw.unsqueeze(0).unsqueeze(0)
+        elif raw.dim() == 3:
+
+            raw = raw.unsqueeze(0)
+
+        raw = F.interpolate(raw, size=(h, w), mode="bicubic", align_corners=False)
+        depth = raw.squeeze().cpu().numpy().astype(np.float32)
+
+        depth = np.clip(depth, 1e-6, None)
+        depth = 1.0 / depth
+
+        return depth
 
     def depth_in_bbox(self, depth_map: np.ndarray, bbox_xyxy: tuple, center_fraction: float = 0.3) -> float:
         x1, y1, x2, y2 = bbox_xyxy
@@ -31,5 +42,16 @@ class DepthEstimator:
 
         hw, hh = w * center_fraction / 2, h * center_fraction / 2
         patch = depth_map[int(cy - hh):int(cy + hh), int(cx - hw):int(cx + hw)]
+
+        return float(np.median(patch)) if patch.size > 0 else 0.0
+
+    def depth_at_point(self, depth_map: np.ndarray, x: int, y: int, patch_radius: int=3) -> float:
+
+        h, w = depth_map.shape
+        xi, yi = int(np.clip(x, 0, w - 1)), int(np.clip(y, 0, h - 1))
+
+        x0, x1 = max(0, xi - patch_radius), min(w, xi + patch_radius + 1)
+        y0, y1 = max(0, yi - patch_radius), min(h, yi + patch_radius + 1)
+        patch = depth_map[y0:y1, x0:x1]
 
         return float(np.median(patch)) if patch.size > 0 else 0.0
