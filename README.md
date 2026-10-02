@@ -63,6 +63,7 @@ All tunable parameters live in `configs/pipeline.yaml`:
 
 ## Project layout
 
+```
 road-object-3d-map/
 ├── configs/ # pipeline.yaml - all tunable parameters
 ├── data/
@@ -79,6 +80,7 @@ road-object-3d-map/
 │ └── extract_frames.py # video -> frame images
 ├── tests/ # pytest unit tests
 └── outputs/ # generated .ply maps + scene renders (generated)
+```
 
 ## Known limitations / things to revisit
 
