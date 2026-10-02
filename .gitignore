@@ -1,6 +1,8 @@
 .venv/
-data/
-outputs/
+data/*
+!data/1ffad8eba31588461aa76d8c8fd0be7e.mp4
+outputs/*
+!outputs/scene.png
 yolov8n.pt
 yolov8n-seg.pt
 .idea/
@@ -11,3 +13,4 @@ tests/__pycache__/
 sanity_check.py
 mapper_log.txt
 tests/
+.cursor/

@@ -21,13 +21,29 @@ class VisualOdometry:
     def __init__(self, frames_dir: str, intrinsics: Optional[Dict]=None,
                  min_matches: int=30, max_features: int=3000, 
                  dynamic_masks: Optional[Dict[str, np.ndarray]]=None,
-                 min_tracked_features: int=800):
+                 min_tracked_features: int=800, 
+                 max_consecutive_failures: int=1, max_change_ratio: float=3.0,
+                 max_forward_angle_deg: float=45.0, ego_mask_y: float=0.70,
+                 backend: str="lk_vo"):
 
+        if backend != "lk_vo":
+            raise ValueError(
+                f"Unsupported SLAM backend '{backend}'. "
+                "This pipeline implements 'lk_vo' (Shi-Tomasi corners tracked with Lucas-Kanade)."
+            )
+
+        self.backend = backend
         self.frames_dir = Path(frames_dir)
         self.min_matches = min_matches
         self.max_features = max_features
         self.dynamic_masks = dynamic_masks or {}
-        self.min_tracked_features = min_tracked_features    
+        self.min_tracked_features = min_tracked_features
+        self.max_consecutive_failures = max_consecutive_failures
+        self.max_change_ratio = max_change_ratio
+        self.max_forward_angle_deg = max_forward_angle_deg
+        self.ego_mask_y = ego_mask_y
+        self._consecutive_failures = 0
+        self._wild_scale_streak = 0
 
         self._intrinsics = intrinsics
         self._poses: Dict[str, CameraPose] = {}
@@ -57,13 +73,22 @@ class VisualOdometry:
         self._ba_warm_start_poses: Dict[str, np.ndarray] = {}
         self._ba_warm_start_points: Dict[int, np.ndarray] = {}
 
-    def _mask_for_frame(self, frame_name: str, gray_shape) -> Optional[np.ndarray]:
+    def _mask_for_frame(self, frame_name: str, gray_shape) -> np.ndarray:
+
+        h, w = gray_shape[:2]
+        allowed = np.full((h, w), 255, dtype=np.uint8)
+
+        if 0.0 < self.ego_mask_y < 1.0:
+            allowed[int(self.ego_mask_y * h):, :] = 0
 
         dyn_mask = self.dynamic_masks.get(frame_name)
-        if dyn_mask is None:
-            return None
+        if dyn_mask is not None:
+            if dyn_mask.shape[:2] != (h, w):
+                dyn_mask = cv2.resize(
+                    dyn_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST
+                )
+            allowed[dyn_mask.astype(bool)] = 0
 
-        allowed = np.where(dyn_mask, 0, 255).astype(np.uint8)
         return allowed
 
     def _detect_features(self, gray, frame_name, existing_pts=None) -> np.ndarray:
@@ -105,6 +130,9 @@ class VisualOdometry:
         )
         status &= in_bounds
 
+        if 0.0 < self.ego_mask_y < 1.0:
+            status &= curr_pts[:, 1] < self.ego_mask_y * h
+
         dyn_mask = self.dynamic_masks.get(frame_name)
         if dyn_mask is not None:
 
@@ -130,61 +158,60 @@ class VisualOdometry:
         R, _ = cv2.Rodrigues(rvec)
         return R, t
 
-    def _build_sparsity(self, n_obs, is_opt, obs_track_i, n_pose_params, n_point_params):
+    def _build_sparsity(self, n_obs, is_opt, obs_track_i, n_pose_params, n_point_params, opt_pose_i):
 
         n_params = n_pose_params + n_point_params
         sparsity = lil_matrix((n_obs * 2, n_params), dtype=int)
-        opt_positions = np.where(is_opt)[0]
-
-        opt_frame_slot = 0
-        running_opt_idx = []
-        opt_frame_idx = np.cumsum(is_opt) - 1
+        opt_cursor = 0
 
         for obs_i in range(n_obs):
 
-            tid_i = obs_track_i[obs_i]
+            tid_i = int(obs_track_i[obs_i])
             pt_off = n_pose_params + tid_i * 3
             sparsity[obs_i * 2: obs_i * 2 + 2, pt_off: pt_off + 3] = 1
 
             if is_opt[obs_i]:
 
-                sparsity[obs_i * 2: obs_i * 2 + 2, 0:n_pose_params] = 1
+                pose_i = int(opt_pose_i[opt_cursor])
+                opt_cursor += 1
+                col = pose_i * 6
+                sparsity[obs_i * 2: obs_i * 2 + 2, col: col + 6] = 1
 
         return sparsity
 
-    def _update_tracks(self, prev_track_ids, orig_idx, curr_pts,
+    def _update_tracks(self, track_ids, curr_pts, prev_pts,
                        prev_frame_name, curr_frame_name, inlier_world_pts, valid_mask):
 
         new_active_tracks = {}
+        correspondences = []
         valid_ptr = 0
 
         for j in range(len(curr_pts)):
 
-            if not valid_mask[j]:
-                continue
+            track_id = int(track_ids[j])
+            track = self._tracks[track_id]
+            x_curr, y_curr = float(curr_pts[j, 0]), float(curr_pts[j, 1])
+            track['obs'][curr_frame_name] = (x_curr, y_curr)
 
-            world_pt = inlier_world_pts[valid_ptr]
-            valid_ptr += 1
+            if prev_frame_name not in track['obs']:
+                track['obs'][prev_frame_name] = (float(prev_pts[j, 0]), float(prev_pts[j, 1]))
 
-            x_curr, y_curr = curr_pts[j]
-            prev_track_id = prev_track_ids.get(int(orig_idx[j]))
+            if valid_mask[j]:
 
-            if prev_track_id is not None:
+                world_pt = np.asarray(inlier_world_pts[valid_ptr], dtype=float).reshape(3)
+                valid_ptr += 1
 
-                track_id = prev_track_id
-                self._tracks[track_id]['obs'][curr_frame_name] = (x_curr, y_curr)
-            else:
+                if track['point_3d'] is None:
+                    track['point_3d'] = world_pt.copy()
+                else:
+                    track['point_3d'][:] = world_pt
 
-                track_id = self._next_track_id
-                self._next_track_id += 1
-                self._tracks[track_id] = {
-                    'point_3d': None,
-                    'obs': {curr_frame_name: (x_curr, y_curr)}
-                }
+                correspondences.append((x_curr, y_curr, track['point_3d']))
 
             new_active_tracks[j] = track_id
 
         self._active_tracks = new_active_tracks
+        self._correspondences[curr_frame_name] = correspondences
 
     def _run_windowed_ba(self, K):
 
@@ -336,12 +363,22 @@ class VisualOdometry:
 
             return np.concatenate([res, prior_res])
 
-        sparsity = self._build_sparsity(n_obs, is_opt, obs_track_i, n_pose_params, n_track_params)
+        sparsity = self._build_sparsity(
+            n_obs, is_opt, obs_track_i, n_pose_params, n_track_params, opt_obs_frame_i
+        )
 
         prior_sparsity = speye(n_pose_params, n_pose_params + n_track_params, format='lil')
         sparsity = vstack([sparsity, prior_sparsity]).tolil()
 
-        result = least_squares(residuals, x0, method='trf', loss='huber', f_scale=2.0, max_nfev=50, jac_sparsity=sparsity)
+        try:
+            result = least_squares(
+                residuals, x0, method='trf', loss='huber', f_scale=2.0,
+                max_nfev=50, jac_sparsity=sparsity
+            )
+        except Exception as exc:
+            print(f"Warning: Bundle adjustment failed ({exc}). Keeping the current poses.")
+            return
+
         refined = result.x
         final_res = result.fun
 
@@ -361,13 +398,18 @@ class VisualOdometry:
                 num_points3D=old.num_points3D,
                 mean_reprojection_error=mean_err
             )
+            self._ba_warm_start_poses[name] = np.array(refined[i * 6:(i + 1) * 6], dtype=float)
 
         for tid, i in track_idx.items():
 
             off = n_pose_params + i * 3
-            refined_pt = refined[off:off + 3]
-            ba_tracks[tid]['point_3d'] = refined_pt
-            self._ba_warm_start_points[tid] = refined_pt
+            refined_pt = np.asarray(refined[off:off + 3], dtype=float)
+            current = ba_tracks[tid]['point_3d']
+            if current is None:
+                ba_tracks[tid]['point_3d'] = refined_pt.copy()
+            else:
+                current[:] = refined_pt
+            self._ba_warm_start_points[tid] = np.array(ba_tracks[tid]['point_3d'], dtype=float)
 
         current_window_set = set(window)
         self._ba_warm_start_poses = {
@@ -422,6 +464,25 @@ class VisualOdometry:
 
         num_registered = 1
         num_failed = 0
+        ref_name = frame_paths[0].name
+
+        def reject(reason: str):
+            nonlocal prev_gray, prev_pts, prev_track_ids, ref_name, num_failed
+            num_failed += 1
+            self._consecutive_failures += 1
+            if self._consecutive_failures <= self.max_consecutive_failures:
+                print(f"Warning: {reason} Keeping reference {ref_name}.")
+                return
+
+            print(f"Warning: {reason} Re-anchoring at {frame_name} after "
+                  f"{self._consecutive_failures} failed attempts. Last pose remains {ref_name}.")
+            self._consecutive_failures = 0
+            self._wild_scale_streak = 0
+            self._prev_triangulated = {}
+            prev_gray = gray
+            prev_pts = self._detect_features(gray, frame_name)
+            prev_track_ids = {}
+            ref_name = frame_name
 
         for i in range(1, len(frame_paths)):
 
@@ -437,12 +498,7 @@ class VisualOdometry:
             curr_pts, status = self._track_features(prev_gray, gray, prev_pts, frame_name)
 
             if status.sum() < 8:
-
-                print(f"Warning: Not enough tracked features ({status.sum()}) for frame {frame_name}. Skipping.")
-                num_failed += 1
-                prev_gray = gray
-                prev_pts = self._detect_features(gray, frame_name)
-                prev_track_ids = {}
+                reject(f"Not enough tracked features ({status.sum()}) for frame {frame_name}.")
                 continue
 
             pts_prev = prev_pts[status]
@@ -450,51 +506,62 @@ class VisualOdometry:
             kept_orig_idx = np.where(status)[0]
 
             if len(pts_prev) < self.min_matches:
-                print(f"Warning: Not enough matches ({len(pts_prev)}) between frames "
-                      f"{frame_paths[i-1].name} and {frame_name}. Skipping.")
-                num_failed += 1
-                prev_gray = gray
-                prev_pts = self._detect_features(gray, frame_name)
-                prev_track_ids = {}
+                reject(f"Not enough matches ({len(pts_prev)}) between {ref_name} and {frame_name}.")
                 continue
 
             E, mask = cv2.findEssentialMat(pts_curr, pts_prev, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
 
             if E is None:
-                print(f"Warning: Essential matrix could not be computed for frame {frame_name}. Skipping.")
-                num_failed += 1
-                prev_gray = gray
-                prev_pts = self._detect_features(gray, frame_name)
-                prev_track_ids = {}
+                reject(f"Essential matrix could not be computed for frame {frame_name}.")
                 continue
 
-            inlier_count, R_rel, t_rel, mask_pose = cv2.recoverPose(E, pts_curr, pts_prev, K, mask=mask)
+            inlier_count, R_rel, t_rel, mask_pose = self._recover_forward_pose(
+                E, pts_curr, pts_prev, K, mask
+            )
+
+            if R_rel is None:
+                reject(f"No forward-motion pose for frame {frame_name}.")
+                continue
 
             if inlier_count < self.min_matches // 2:
-                print(f"Warning: Not enough inliers ({inlier_count}) for frame {frame_name}. Skipping.")
-                num_failed += 1
-                prev_gray = gray
-                prev_pts = self._detect_features(gray, frame_name)
-                prev_track_ids = {}
+                reject(f"Not enough inliers ({inlier_count}) for frame {frame_name}.")
                 continue
 
             rel_angle_deg = np.degrees(np.arccos(np.clip((np.trace(R_rel) - 1) / 2, -1.0, 1.0)))
             max_rel_angle = 25.0
 
             if rel_angle_deg > max_rel_angle:
-                print(f"Warning: Relative rotation ({rel_angle_deg:.2f} deg) exceeds "
-                      f"threshold ({max_rel_angle} deg) for frame {frame_name}. Skipping.")
-                num_failed += 1
-                prev_gray = gray
-                prev_pts = self._detect_features(gray, frame_name)
-                prev_track_ids = {}
+                reject(f"Relative rotation ({rel_angle_deg:.2f} deg) exceeds "
+                       f"{max_rel_angle} deg for frame {frame_name}.")
                 continue
 
             inlier_mask = mask_pose.ravel().astype(bool)
 
-            scale = self._estimate_relative_scale(
-                pts_prev[inlier_mask], pts_curr[inlier_mask], K, R_world, t_world, R_rel, t_rel
+            final_orig_idx = kept_orig_idx[inlier_mask]
+            final_curr_pts = pts_curr[inlier_mask]
+            final_prev_pts = pts_prev[inlier_mask]
+
+            curr_track_ids, created_ids = self._assign_track_ids(
+                prev_track_ids, final_orig_idx, final_curr_pts
             )
+
+            track_ids_for_scale = np.array(
+                [curr_track_ids[idx] for idx in range(len(final_curr_pts))], dtype=int
+            )
+
+            scale, scale_cloud = self._estimate_relative_scale(
+                final_prev_pts, final_curr_pts, K, R_world, t_world, R_rel, t_rel,
+                track_ids=track_ids_for_scale, default_scale=1.0
+            )
+
+            if scale is None:
+
+                self._discard_new_tracks(created_ids)
+                reject(f"Could not estimate scale for frame {frame_name}.")
+                continue
+
+            if scale_cloud is not None:
+                self._prev_triangulated = scale_cloud
 
             t_world = t_world + R_world @ (t_rel.flatten() * scale)
             R_world = R_world @ R_rel
@@ -507,15 +574,15 @@ class VisualOdometry:
                 mean_reprojection_error=0.0
             )
 
-            world_points, valid_mask = self._triangulate_store(pts_prev[inlier_mask], pts_curr[inlier_mask], 
-                                    K, R_world, t_world, R_rel, t_rel, frame_name=frame_name, scale=scale)
+            world_points, valid_mask = self._triangulate(
+                final_prev_pts, final_curr_pts, K, R_world, t_world, R_rel, t_rel, scale=scale
+            )
 
-            final_orig_idx = kept_orig_idx[inlier_mask]
-            final_curr_pts = pts_curr[inlier_mask]
             self._update_tracks(
-                prev_track_ids, orig_idx=final_orig_idx,
+                curr_track_ids,
                 curr_pts=final_curr_pts,
-                prev_frame_name=frame_paths[i-1].name,
+                prev_pts=final_prev_pts,
+                prev_frame_name=ref_name,
                 curr_frame_name=frame_name,
                 inlier_world_pts=world_points,
                 valid_mask=valid_mask
@@ -543,11 +610,123 @@ class VisualOdometry:
             prev_gray = gray
             prev_pts = combined_pts
             prev_track_ids = surviving_track_ids
+            ref_name = frame_name
+            self._consecutive_failures = 0
             num_registered += 1
 
         print(f"Visual odometry completed. Registered {num_registered} / {len(frame_paths)} frames, Failed: {num_failed}")
 
-    def _estimate_relative_scale(self, pts_prev, pts_curr, K, R_world, t_world, R_rel, t_rel, default_scale: float=1.0) -> float:
+    def _recover_forward_pose(self, E, pts_curr, pts_prev, K, ransac_mask):
+
+        if E is None:
+            return 0, None, None, None
+        if E.shape[0] > 3:
+            E = E[:3]
+
+        R1, R2, t = cv2.decomposeEssentialMat(E)
+        t = np.asarray(t, dtype=float).reshape(3)
+        ransac = np.ones(len(pts_curr), dtype=bool) if ransac_mask is None else ransac_mask.ravel().astype(bool)
+
+        P_curr = K @ np.hstack([np.eye(3), np.zeros((3, 1))])
+        best = None
+
+        for R in (R1, R2):
+            for direction in (t, -t):
+                off = self._translation_off_forward_deg(direction)
+                if off > self.max_forward_angle_deg:
+                    continue
+
+                P_prev = K @ np.hstack([R, direction.reshape(3, 1)])
+                pts4d = cv2.triangulatePoints(P_curr, P_prev, pts_curr.T, pts_prev.T)
+                w = pts4d[3]
+                finite_w = np.abs(w) > 1e-8
+                X = np.full((len(pts_curr), 3), np.nan)
+                X[finite_w] = (pts4d[:3, finite_w] / w[finite_w]).T
+
+                depth_curr = X[:, 2]
+                X_prev = (R @ np.nan_to_num(X).T).T + direction
+                depth_prev = X_prev[:, 2]
+                in_front = (
+                    ransac & finite_w & np.isfinite(X).all(axis=1) &
+                    (depth_curr > 0.1) & (depth_prev > 0.1)
+                )
+                count = int(in_front.sum())
+                if best is None or count > best[0]:
+                    best = (count, R, direction, in_front)
+
+        if best is None:
+            return 0, None, None, None
+
+        count, R, direction, in_front = best
+        return count, R, direction.reshape(3, 1), in_front.astype(np.uint8).reshape(-1, 1)
+
+    def _translation_off_forward_deg(self, t_rel: np.ndarray) -> float:
+
+        t = np.asarray(t_rel, dtype=float).reshape(-1)
+        norm = float(np.linalg.norm(t))
+        if norm < 1e-8 or t.shape[0] < 3:
+            return 180.0
+        return float(np.degrees(np.arccos(np.clip(t[2] / norm, -1.0, 1.0))))
+
+    def _hold_last_scale(self, prev_by_track, default_scale: float):
+
+        scale = getattr(self, "_last_scale", None)
+        if scale is None or not np.isfinite(scale) or scale <= 0:
+            scale = default_scale
+        # Keep a cloud that already matches the running scale. Replace it only
+        # to seed the first reference.
+        cloud = prev_by_track if not self._prev_triangulated else None
+        return float(scale), cloud
+
+    def _resize_cloud(self, prev_by_track, factor: float):
+
+        return {
+            k: np.asarray(v, dtype=float) * factor
+            for k, v in prev_by_track.items()
+        }
+
+    def _apply_scale_ratio(self, relative: float, prev_by_track):
+
+        if not np.isfinite(relative) or relative <= 0:
+            return self._hold_last_scale(prev_by_track, 1.0)
+
+        last_scale = getattr(self, "_last_scale", None)
+        if last_scale is None or not np.isfinite(last_scale) or last_scale <= 0:
+            self._last_scale = float(relative)
+            self._wild_scale_streak = 0
+            self._consecutive_failures = 0
+            return float(relative), prev_by_track
+
+        lo = 1.0 / self.max_change_ratio
+        hi = self.max_change_ratio
+        if lo <= relative <= hi:
+            scale = float(last_scale * relative)
+            self._last_scale = scale
+            self._wild_scale_streak = 0
+            self._consecutive_failures = 0
+            return scale, prev_by_track
+
+        # One bad triangulation must not divide the rest of the trajectory.
+        # Adopt the new size only after several frames agree.
+        self._wild_scale_streak += 1
+        if self._wild_scale_streak >= 4:
+            clamped = float(min(max(relative, lo), hi))
+            scale = float(last_scale * clamped)
+            print(f"Warning: Scale change ({relative:.2f}) stayed outside "
+                  f"max_change_ratio ({self.max_change_ratio}) for "
+                  f"{self._wild_scale_streak} frames. Stepping by {clamped:.2f}.")
+            self._last_scale = scale
+            self._wild_scale_streak = 0
+            self._consecutive_failures = 0
+            return scale, prev_by_track
+
+        print(f"Warning: Estimated scale change ({relative:.2f}) exceeds "
+              f"max_change_ratio ({self.max_change_ratio}). "
+              f"Keeping the previous scale.")
+        return float(last_scale), self._resize_cloud(prev_by_track, relative)
+
+    def _estimate_relative_scale(self, pts_prev, pts_curr, K, R_world, t_world, R_rel, t_rel, 
+                                 track_ids=None, default_scale: float=1.0):
 
         P_prev = K @ np.hstack([R_world.T, (-R_world.T @ t_world).reshape(3, 1)])
 
@@ -557,46 +736,46 @@ class VisualOdometry:
 
         pts4d = cv2.triangulatePoints(P_prev, P_curr_unit, pts_prev.T, pts_curr.T)
         pts3d_prev = (pts4d[:3] / pts4d[3]).T
+        finite = np.isfinite(pts3d_prev).all(axis=1)
 
-        prev_by_key = {
-            (round(x, 1), round(y, 1)): pt for (x, y), pt in zip(pts_prev, pts3d_prev)
-            if np.isfinite(pt).all()
-        }
+        if track_ids is not None:
 
-        shared_keys = set(prev_by_key.keys()) & set(self._prev_triangulated.keys())
+            prev_by_track = {
+                int(tid): pt for tid, pt, ok in zip(track_ids, pts3d_prev, finite)
+                if ok and tid >= 0
+            }
+        else:
+            prev_by_track = {}
 
-        next_by_key = {
-            (round(x, 1), round(y, 1)): pt for (x, y), pt in zip(pts_curr, pts3d_prev)
-            if np.isfinite(pt).all()
-        }
+        shared_ids = set(prev_by_track.keys()) & set(self._prev_triangulated.keys())
 
-        if len(shared_keys) < 5:
+        if len(shared_ids) < 5:
+            return self._hold_last_scale(prev_by_track, default_scale)
 
-            self._prev_triangulated = next_by_key
-            return getattr(self, "_last_scale", default_scale)
-
-        keys = list(shared_keys)
-        new_pts = np.array([prev_by_key[k] for k in keys])
+        keys = list(shared_ids)
+        new_pts = np.array([prev_by_track[k] for k in keys])
         old_pts = np.array([self._prev_triangulated[k] for k in keys])
 
         new_dists = np.linalg.norm(new_pts[:, None, :] - new_pts[None, :, :], axis=-1)
         old_dists = np.linalg.norm(old_pts[:, None, :] - old_pts[None, :, :], axis=-1)
 
         iu = np.triu_indices(len(keys), k=1)
-        valid = old_dists[iu] > 1e-6
+        valid = (
+            (old_dists[iu] > 1e-6) & (new_dists[iu] > 1e-6) &
+            np.isfinite(old_dists[iu]) & np.isfinite(new_dists[iu])
+        )
         if valid.sum() < 3:
-
-            self._prev_triangulated = next_by_key
-            return getattr(self, "_last_scale", default_scale)
+            return self._hold_last_scale(prev_by_track, default_scale)
 
         ratios = old_dists[iu][valid] / new_dists[iu][valid]
-        scale = float(np.median(ratios))
+        ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
+        if ratios.size < 3:
+            return self._hold_last_scale(prev_by_track, default_scale)
 
-        self._prev_triangulated = next_by_key
-        self._last_scale = scale
-        return scale
+        relative = float(np.median(ratios))
+        return self._apply_scale_ratio(relative, prev_by_track)
 
-    def _triangulate_store(self, pts_prev, pts_curr, K, R_world, t_world, R_rel, t_rel, frame_name, scale):
+    def _triangulate(self, pts_prev, pts_curr, K, R_world, t_world, R_rel, t_rel, scale):
 
         R_prev_world = R_world @ R_rel.T
         t_prev_world = t_world - R_prev_world @ (t_rel.flatten() * scale)
@@ -607,16 +786,11 @@ class VisualOdometry:
         pts4d = cv2.triangulatePoints(P_prev, P_curr, pts_prev.T, pts_curr.T)
         pts3d = (pts4d[:3] / pts4d[3]).T
 
-        valid = np.isfinite(pts3d).all(axis=1) & (np.linalg.norm(pts3d, axis=1) < 500)
-        pts3d = pts3d[valid]
-        pts_curr_valid = pts_curr[valid]
+        cam = (pts3d - t_world.reshape(1, 3)) @ R_world
+        depth = cam[:, 2]
+        valid = np.isfinite(pts3d).all(axis=1) & (depth > 0.1) & (depth < 500.0)
 
-        self._sparse_points.extend(pts3d.tolist())
-        self._correspondences[frame_name] = [
-            (x, y, pt) for (x, y), pt in zip(pts_curr_valid, pts3d)
-        ]
-
-        return pts3d, valid
+        return pts3d[valid], valid
 
     def read_poses(self) -> Dict[str, CameraPose]:
         return self._poses
@@ -633,7 +807,45 @@ class VisualOdometry:
         }
 
     def read_sparse_points(self) -> np.ndarray:
-        return np.array(self._sparse_points) if self._sparse_points else np.empty((0, 3))
+        pts = [tr['point_3d'] for tr in self._tracks.values() if tr['point_3d'] is not None]
+        if pts:
+            return np.vstack(pts)
+        if self._sparse_points:
+            return np.asarray(self._sparse_points, dtype=float)
+        return np.empty((0, 3))
 
     def read_sparse_correspondences(self) -> Dict[str, np.ndarray]:
         return self._correspondences
+
+    def _assign_track_ids(self, prev_track_ids, orig_idx, curr_pts):
+
+        new_active_tracks = {}
+        created = []
+
+        for j in range(len(curr_pts)):
+
+            prev_track_id = prev_track_ids.get(int(orig_idx[j]))
+
+            if prev_track_id is not None:
+                track_id = prev_track_id
+            else:
+
+                track_id = self._next_track_id
+                self._next_track_id += 1
+                self._tracks[track_id] = {
+                    'point_3d': None,
+                    'obs': {}
+                }
+                created.append(track_id)
+
+            new_active_tracks[j] = track_id
+
+        return new_active_tracks, created
+
+    def _discard_new_tracks(self, created_ids):
+
+        for tid in created_ids:
+            self._tracks.pop(tid, None)
+
+        if created_ids:
+            self._next_track_id = min(created_ids)

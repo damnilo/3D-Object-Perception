@@ -7,14 +7,14 @@ import cv2
 from src.slam.visual_odometry import CameraPose
 
 CLASS_COLORS = {
-    "car": [0.2, 0.4, 0.9],
-    "truck": [0.1, 0.2, 0.6],
-    "bus": [0.3, 0.6, 0.9],
-    "motorcycle": [0.9, 0.5, 0.1],
-    "bicycle": [0.9, 0.7, 0.2],
-    "person": [0.9, 0.1, 0.1],
-    "traffic light": [0.1, 0.9, 0.2],
-    "stop sign": [0.9, 0.1, 0.6]
+    "car": [0.15, 0.40, 0.95],
+    "truck": [1.00, 0.45, 0.05],
+    "bus": [0.58, 0.20, 0.90],
+    "motorcycle": [0.98, 0.85, 0.05],
+    "bicycle": [0.00, 0.80, 0.85],
+    "person": [0.10, 0.80, 0.25],
+    "traffic light": [0.55, 1.00, 0.15],
+    "stop sign": [1.00, 0.15, 0.60],
 }
 DEFAULT_COLOR = [0.8, 0.8, 0.8]
 
@@ -101,6 +101,8 @@ def camera_trajectory(
 ) -> o3d.geometry.LineSet:
 
     sorted_poses = sorted(poses.values(), key=lambda p: p.frame_name)
+    if len(sorted_poses) < 2:
+        return o3d.geometry.LineSet()
     points = np.array([p.translation for p in sorted_poses])
 
     lines = [[i, i+1] for i in range(len(points)-1)]
@@ -113,16 +115,17 @@ def camera_trajectory(
 
     return line_set
 
-def _fit_view(view_control, geometries):
+def _fit_view(view_control, geometries, zoom: float=0.7,
+              front=None, up=None):
 
     bbox = geometries[0].get_axis_aligned_bounding_box()
     for g in geometries[1:]:
         bbox += g.get_axis_aligned_bounding_box()
 
     view_control.set_lookat(bbox.get_center())
-    view_control.set_front([0.3, -0.5, -0.8])
-    view_control.set_up([0, -1, 0])
-    view_control.set_zoom(0.7)
+    view_control.set_front([0.3, -0.5, -0.8] if front is None else front)
+    view_control.set_up([0, -1, 0] if up is None else up)
+    view_control.set_zoom(zoom)
 
 def _build_scene(map_objects, poses, environment_points, show_trajectory, show_grid, show_axes):
 
@@ -212,8 +215,9 @@ def render_flythrough(map_objects: List, poses: Dict[str, CameraPose],
     box_original_colors = [np.asarray(box.colors)[0].copy() for box in box_geoms]
 
     for obj in map_objects:
-        earliest = min(frame_order.get(f, float('inf')) for f in obj.frame_names)
-        box_reveal_frame.append(earliest)
+        names = list(getattr(obj, "frame_names", []) or [])
+        known = [frame_order[f] for f in names if f in frame_order]
+        box_reveal_frame.append(min(known) if known else 0)
 
     for box in box_geoms:
         vis.add_geometry(box)
@@ -224,6 +228,9 @@ def render_flythrough(map_objects: List, poses: Dict[str, CameraPose],
     ctr = vis.get_view_control()
 
     writer = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+    if not writer.isOpened():
+        vis.destroy_window()
+        raise RuntimeError(f"Could not open video writer for {output_path}")
 
     revealed_points = []
 
@@ -256,19 +263,41 @@ def render_flythrough(map_objects: List, poses: Dict[str, CameraPose],
 
             ctr.set_lookat(pos + rot[:, 2] * 5.0)
             ctr.set_front(-rot[:, 2])
-            ctr.set_up(rot[:, 1])
+            ctr.set_up(-rot[:, 1])
             ctr.set_zoom(0.5)
 
             vis.poll_events()
             vis.update_renderer()
             img = np.asarray(vis.capture_screen_float_buffer(do_render=True))
             frame_bgr = cv2.cvtColor((img * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+            if frame_bgr.shape[1] != width or frame_bgr.shape[0] != height:
+                frame_bgr = cv2.resize(frame_bgr, (width, height))
             writer.write(frame_bgr)
 
     writer.release()
     vis.destroy_window()
 
-def save_map(env_points: Optional[np.ndarray], output_path: str):
+def save_map(env_points: Optional[np.ndarray], output_path: str, map_objects: Optional[List] = None):
 
     object_cloud = env_point_cloud(env_points)
+
+    if map_objects:
+        obj_pts, obj_cols = [], []
+        for obj in map_objects:
+            outlines = getattr(obj, "outlines", None)
+            if not outlines:
+                continue
+            pts = np.vstack(outlines)
+            if len(pts) == 0:
+                continue
+            color = CLASS_COLORS.get(getattr(obj, "class_name", ""), DEFAULT_COLOR)
+            obj_pts.append(pts)
+            obj_cols.append(np.tile(np.asarray(color, dtype=float), (len(pts), 1)))
+
+        if obj_pts:
+            extra = o3d.geometry.PointCloud()
+            extra.points = o3d.utility.Vector3dVector(np.vstack(obj_pts))
+            extra.colors = o3d.utility.Vector3dVector(np.vstack(obj_cols))
+            object_cloud += extra
+
     o3d.io.write_point_cloud(output_path, object_cloud)

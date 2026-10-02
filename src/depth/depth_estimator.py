@@ -8,7 +8,12 @@ class DepthEstimator:
 
     def __init__(self, model_name: str = "depth-anything/Depth-Anything-V2-Small-hf", device = "cuda"):
 
-        self.device = device if torch.cuda.is_available() else "cpu"
+        requested = device
+        if isinstance(requested, str) and requested.startswith("cuda") and not torch.cuda.is_available():
+            print(f"Warning: depth device '{requested}' is unavailable. Using cpu.")
+            requested = "cpu"
+        self.device = requested
+        self.model_name = model_name
         self.pipeline = pipeline(task="depth-estimation", model=model_name, device=self.device)
 
     def estimate(self, frame_bgr: np.ndarray) -> np.ndarray:

@@ -25,6 +25,9 @@ class RoadObjectSegmenter:
         self.model = YOLO(model_name)
         self.confidence = confidence
         self.target_classes = target_classes if target_classes is not None else []
+        if "seg" not in str(model_name):
+            print(f"Warning: detection model '{model_name}' is not a segmentation model. "
+                  "Object outlines need masks, so this model will produce no sightings.")
 
     def segment(self, frame_bgr: np.ndarray) -> List[SegmentDetection]:
 

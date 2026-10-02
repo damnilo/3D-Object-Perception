@@ -1,8 +1,6 @@
-from dataclasses import dataclass
-from typing import List, Dict, TYPE_CHECKING
+from typing import Dict
 
 import numpy as np
-from scipy.cluster.hierarchy import fcluster, linkage
 
 from src.slam.visual_odometry import CameraPose
 
@@ -35,7 +33,7 @@ def backproject_build(pixel_xy: tuple, depth: float, intrinsics: Dict, pose: Cam
     return point_world
 
 def compute_depth(sparse_points, depth_map, pose, depth_at_fn, min_points: int = 8,
-                  max_reasonable_ratio: float = 100.0) -> float:
+                  max_reasonable_ratio: float = 100.0, frame_name: str = None) -> float:
 
     ratios = []
     for x, y, point_world in sparse_points:
@@ -45,11 +43,13 @@ def compute_depth(sparse_points, depth_map, pose, depth_at_fn, min_points: int =
         raw_depth = depth_at_fn(depth_map, x, y)
         if colmap_depth > 0 and raw_depth > 0:
             ratio = colmap_depth / raw_depth
-            if ratio < max_reasonable_ratio:
+            if 1.0 / max_reasonable_ratio < ratio < max_reasonable_ratio:
                 ratios.append(ratio)
 
     if  len(ratios) < min_points:
-        print("Warning: No valid depth ratios found. Returning None.")
+        label = f"frame {frame_name}" if frame_name else "current frame"
+        print(f"Warning: Only {len(ratios)} valid depth ratios found for {label}. Returning None.")
+        
         return None
 
     return float(np.median(ratios))

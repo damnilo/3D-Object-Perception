@@ -13,7 +13,7 @@ frame_extraction:
   resize_width: 1280
 
 detection:
-  model: "yolov8n.pt"
+  model: "yolov8n-seg.pt"
   confidence: 0.4
   target_classes:
     - "car"
@@ -30,10 +30,18 @@ depth:
   device: "cpu"
 
 slam:
-  backend: "orb_vo"
+  backend: "lk_vo"
+  max_consecutive_failures: 1
+  max_change_ratio: 3.0
+  max_forward_angle_deg: 45
+  # Bottom of a dashcam frame is the ego hood and dashboard. Features there
+  # do not move, and they pull the translation estimate off the road.
+  ego_mask_y: 0.70
 
 mapping:
-  cluster_eps_meters: 1.0
+  # Repeated views of one object land a few meters apart. This joins them
+  # into a single outline instead of drawing the same object several times.
+  cluster_eps_meters: 5.0
   cluster_min_samples: 2
 
 visualization:
